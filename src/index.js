@@ -5,6 +5,7 @@ const {
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   Browsers
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
@@ -239,10 +240,18 @@ async function connectToWhatsApp() {
 
     let version;
     try {
-      const latest = await fetchLatestBaileysVersion();
+      // Use the live WhatsApp Web version instead of Baileys' bundled version.
+      const latest = await fetchLatestWaWebVersion();
       version = latest.version;
-    } catch {
-      version = undefined;
+      console.log("🌐 Using live WhatsApp Web version: " + version.join("."));
+    } catch (liveVersionError) {
+      console.warn("⚠️ Could not fetch live WhatsApp Web version; falling back to Baileys version.");
+      try {
+        const latest = await fetchLatestBaileysVersion();
+        version = latest.version;
+      } catch {
+        version = undefined;
+      }
     }
 
     const sock = makeWASocket({
