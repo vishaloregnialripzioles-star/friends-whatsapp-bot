@@ -101,24 +101,31 @@ async function askGroq(prompt, sender) {
 }
 function helpText() {
   return [
-    `✨ *${BOT_NAME}*`,
+    `✨ *${BOT_NAME} — Command Center*`,
     "",
-    `*Basic*`,
-    `${PREFIX}ping — Check if I'm online`,
-    `${PREFIX}help — Show this menu`,
+    "*📌 Basic*",
+    `${PREFIX}ping — Check if the bot is online`,
+    `${PREFIX}help — Show all commands`,
     `${PREFIX}about — Bot information`,
     `${PREFIX}uptime — Show bot uptime`,
     "",
-    `*Fun*`,
-    `${PREFIX}8ball <question> — Magic 8-ball`,
+    "*🎮 Fun*",
+    `${PREFIX}8ball <question> — Ask the Magic 8-Ball`,
     `${PREFIX}coinflip — Flip a coin`,
-    `${PREFIX}dice — Roll a dice`,
+    `${PREFIX}dice — Roll a six-sided dice`,
     `${PREFIX}joke — Get a clean joke`,
-    `${PREFIX}fortune — Random fun prediction`,
-    `${PREFIX}ai <message> — Chat with Groq AI`,
+    `${PREFIX}fortune — Get a random fortune`,
     "",
-    "More AI, games, XP and group features can be added on top of this stable core. ❤️"
-  ].join("\n");
+    "*🤖 AI*",
+    `${PREFIX}ai <message> — Chat with the AI`,
+    "",
+    "*💡 Examples*",
+    `${PREFIX}ping`,
+    `${PREFIX}8ball will I win?`,
+    `${PREFIX}ai tell me a fun fact`,
+    "",
+    "❤️ More commands can be added here as the bot grows."
+  ].join("\\n");
 }
 
 function handleCommand(command, args) {
@@ -206,7 +213,10 @@ async function handleIncomingMessage(sock, message) {
   const args = parts;
 
   const sender = message.key.participant || jid;
-  if (isCoolingDown(sender)) return;
+  console.log(`⚡ Command received: ${PREFIX}${command} | chat: ${jid}`);
+
+  // Core commands should always work even if a previous message hit the cooldown.
+  if (!["ping", "help"].includes(command) && isCoolingDown(sender)) return;
 
   let response = handleCommand(command, args);
 
@@ -224,7 +234,9 @@ async function handleIncomingMessage(sock, message) {
     }
   }
 
-  if (!response) return;
+  if (!response) {
+    response = `❓ Unknown command: *${PREFIX}${command}*\\nUse *${PREFIX}help* to see every available command.`;
+  }
 
   try {
     await sendText(sock, jid, response, message);
