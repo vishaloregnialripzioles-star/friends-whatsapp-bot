@@ -240,6 +240,13 @@ async function connectToWhatsApp() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
+    // A valid saved session must always win over pairing mode. This prevents
+    // every Render restart from generating a new pairing code.
+    const hasSavedSession = Boolean(state.creds.registered);
+    if (hasSavedSession) {
+      console.log("🔐 Saved WhatsApp session found. Reusing it; no new pairing code will be requested.");
+    }
+
     let version;
     try {
       const latest = await fetchLatestWaWebVersion();
@@ -268,6 +275,10 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on("creds.update", saveCreds);
+
+    // Save credentials immediately whenever WhatsApp updates the session.
+    // This is what allows later restarts to reuse the same linked session.
+
 
     let pairingRequested = false;
     let pairingTimer = null;
@@ -310,7 +321,7 @@ async function connectToWhatsApp() {
       if (connection === "connecting") {
         console.log("🔄 Connecting to WhatsApp...");
 
-        if (PAIRING_PHONE_NUMBER && !state.creds.registered && !pairingRequested && !pairingTimer) {
+        if (PAIRING_PHONE_NUMBER && !state.creds.registered && !hasSavedSession && !pairingRequested && !pairingTimer) {
           pairingTimer = setTimeout(() => {
             pairingTimer = null;
             requestPairingCode().catch((error) => {
