@@ -133,40 +133,15 @@ function helpText() {
   return [
     "✨ *" + BOT_NAME + " — Commands*",
     "",
-    "*🧭 Basics*",
-    PREFIX + "ping — Check that I respond",
-    PREFIX + "help / commands — Show this menu",
-    PREFIX + "status — Connection and uptime",
-    PREFIX + "about — Bot information",
-    PREFIX + "uptime — Runtime",
-    PREFIX + "prefix — Show the active prefix",
-    PREFIX + "groupid — Show this group's ID",
-    PREFIX + "groupinfo — Group name and member count",
-    PREFIX + "admins — List group admins",
+    "*Basics*  " + PREFIX + "ping | " + PREFIX + "help | " + PREFIX + "status | " + PREFIX + "uptime | " + PREFIX + "about | " + PREFIX + "prefix",
+    "*Group*  " + PREFIX + "groupid | " + PREFIX + "groupinfo | " + PREFIX + "admins",
+    "*Admin only*  " + PREFIX + "kick @member | " + PREFIX + "lock | " + PREFIX + "unlock",
+    "*Fun*  " + PREFIX + "8ball | " + PREFIX + "coinflip | " + PREFIX + "roll 2d6 | " + PREFIX + "choose A | B | " + PREFIX + "rps | " + PREFIX + "random",
+    PREFIX + "wyr A | B | " + PREFIX + "ship A | B | " + PREFIX + "joke | " + PREFIX + "meme | " + PREFIX + "fact | " + PREFIX + "quote | " + PREFIX + "fortune",
+    PREFIX + "compliment | " + PREFIX + "hug | " + PREFIX + "roast | " + PREFIX + "truth | " + PREFIX + "dare | " + PREFIX + "riddle | " + PREFIX + "reverse | " + PREFIX + "rate",
+    "*AI*  " + PREFIX + "ai <message> (set GROQ_API_KEY in Render)",
     "",
-    "*🛡️ Admin only (bot must also be a group admin)*",
-    PREFIX + "kick @member — Remove a mentioned member, or reply to their message",
-    PREFIX + "lock — Only admins can send messages",
-    PREFIX + "unlock — Let everyone send messages",
-    "",
-    "*🎲 Games and fun*",
-    PREFIX + "8ball <question> — Ask the Magic 8-Ball",
-    PREFIX + "coinflip — Flip a coin",
-    PREFIX + "dice or roll [NdS] — Roll dice (example: 2d6)",
-    PREFIX + "choose A | B — Pick between options",
-    PREFIX + "rps <rock|paper|scissors> — Play a round",
-    PREFIX + "random [min] [max] — Pick a number",
-    PREFIX + "wyr A | B — Would you rather?",
-    PREFIX + "ship name | name — Silly compatibility score",
-    PREFIX + "joke, meme, fact, quote, fortune — Random fun",
-    PREFIX + "riddle — Get a quick riddle",
-    PREFIX + "compliment [name], hug [name], roast [name]",
-    PREFIX + "truth, dare, reverse <text>, rate <thing>",
-    "",
-    "*🤖 AI*",
-    PREFIX + "ai <message> — Ask Groq AI (needs GROQ_API_KEY)",
-    "",
-    "Set PREFIX in Render to change the command prefix. If ALLOWED_GROUP_ID is set, commands are restricted to that group."
+    "Kick/lock/unlock require you and the bot to be group admins."
   ].join("\n");
 }
 
@@ -335,13 +310,15 @@ async function handleGroupCommand(sock, message, groupJid, command, sender) {
   return "❓ Unknown group command.";
 }
 
-async function sendText(sock, jid, text, quotedMessage) {
-  const sent = await sock.sendMessage(jid, { text }, quotedMessage ? { quoted: quotedMessage } : undefined);
+async function sendText(sock, jid, text) {
+  const startedAt = Date.now();
+  const sent = await sock.sendMessage(jid, { text });
   const sentId = sent && sent.key && sent.key.id;
   if (sentId) {
     sentMessageIds.add(sentId);
     if (sentMessageIds.size > 2000) sentMessageIds.delete(sentMessageIds.values().next().value);
   }
+  console.log("📤 WhatsApp send ack: " + (Date.now() - startedAt) + "ms");
   return sent;
 }
 
@@ -421,7 +398,7 @@ async function handleIncomingMessage(sock, message) {
   }
 
   try {
-    await sendText(sock, jid, response, message);
+    await sendText(sock, jid, response);
   } catch (error) {
     console.error("Failed to send reply:", error && error.message ? error.message : error);
   }
