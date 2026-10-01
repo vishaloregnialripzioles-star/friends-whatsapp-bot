@@ -30,13 +30,37 @@ let isConnecting = false;
 
 function getMessageText(message) {
   if (!message) return "";
-  const content = normalizeMessageContent(message) || message;
+
+  // Baileys can wrap normal messages in ephemeral/view-once containers.
+  // Unwrap them before reading the actual text.
+  let content = normalizeMessageContent(message) || message;
+
+  for (let i = 0; i < 4 && content; i++) {
+    if (content.ephemeralMessage?.message) {
+      content = content.ephemeralMessage.message;
+      continue;
+    }
+    if (content.viewOnceMessage?.message) {
+      content = content.viewOnceMessage.message;
+      continue;
+    }
+    if (content.viewOnceMessageV2?.message) {
+      content = content.viewOnceMessageV2.message;
+      continue;
+    }
+    if (content.documentWithCaptionMessage?.message) {
+      content = content.documentWithCaptionMessage.message;
+      continue;
+    }
+    break;
+  }
+
   return (
-    content.conversation ||
-    content.extendedTextMessage?.text ||
-    content.imageMessage?.caption ||
-    content.videoMessage?.caption ||
-    content.documentMessage?.caption ||
+    content?.conversation ||
+    content?.extendedTextMessage?.text ||
+    content?.imageMessage?.caption ||
+    content?.videoMessage?.caption ||
+    content?.documentMessage?.caption ||
     ""
   ).trim();
 }
@@ -404,8 +428,11 @@ async function connectToWhatsApp() {
       for (const message of messages) {
         try {
           const incomingText = getMessageText(message.message);
+          console.log(`📍 Chat JID: ${message.key.remoteJid || "unknown"} | fromMe: ${Boolean(message.key.fromMe)}`);
           if (incomingText) {
             console.log(`📝 Incoming text: ${JSON.stringify(incomingText.slice(0, 100))} | chat: ${message.key.remoteJid}`);
+          } else {
+            console.log("⚠️ No text command detected in this message.");
           }
           await handleIncomingMessage(sock, message);
         } catch (error) {
