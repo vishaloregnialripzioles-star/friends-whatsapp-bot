@@ -286,7 +286,7 @@ async function connectToWhatsApp() {
 
         const code = await sock.requestPairingCode(PAIRING_PHONE_NUMBER);
         console.log("");
-        console.log("🔑 WhatsApp pairing code generated successfully.");
+        console.log("🔑 WhatsApp pairing code: " + code);
         console.log("📱 On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number.");
         console.log("⏱️ Enter the newest code promptly; do not reuse an older code.");
         console.log("🔒 Never share the pairing code with anyone.");
