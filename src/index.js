@@ -16,7 +16,7 @@ const PREFIX = process.env.PREFIX || "!";
 const BOT_NAME = process.env.BOT_NAME || "FriendsBot";
 const WHATSAPP_ENABLED = String(process.env.WHATSAPP_ENABLED).toLowerCase() === "true";
 const ALLOWED_GROUP_ID = (process.env.ALLOWED_GROUP_ID || "").trim();
-const PAIRING_PHONE_NUMBER = (process.env.PAIRING_PHONE_NUMBER || "").replace(/\\D/g, "");
+const PAIRING_PHONE_NUMBER = (process.env.PAIRING_PHONE_NUMBER || "").replace(/\D/g, "");
 const COOLDOWN_MS = Math.max(0, Number(process.env.COOLDOWN_MS || 1500));
 const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
 const AI_MODEL = (process.env.AI_MODEL || "llama-3.3-70b-versatile").trim();
@@ -248,10 +248,12 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
       auth: state,
       version,
-      browser: Browsers.ubuntu("Chrome"),
+      browser: Browsers.macOS("Google Chrome"),
       logger: pino({ level: "silent" }),
-      markOnlineOnConnect: false,
-      syncFullHistory: false
+      markOnlineOnConnect: true,
+      syncFullHistory: false,
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000
     });
 
     sock.ev.on("creds.update", saveCreds);
@@ -265,7 +267,7 @@ async function connectToWhatsApp() {
         console.log("\n🔒 Never share this QR or your saved auth_info folder.\n");
       }
 
-      if (connection === "connecting" && PAIRING_PHONE_NUMBER && !state.creds.registered && !pairingRequested) {
+      if ((connection === "connecting" || connection === "open") && PAIRING_PHONE_NUMBER && !state.creds.registered && !pairingRequested) {
         pairingRequested = true;
         setTimeout(async () => {
           try {
@@ -283,7 +285,7 @@ async function connectToWhatsApp() {
             pairingRequested = false;
             console.error("❌ Could not create pairing code:", error?.message || error);
           }
-        }, 2500);
+        }, 4000);
       }
 
       if (connection === "connecting") {
