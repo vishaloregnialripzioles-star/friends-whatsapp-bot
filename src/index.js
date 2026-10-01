@@ -103,6 +103,13 @@ function isCoolingDown(sender) {
   return false;
 }
 
+function isCreatorQuestion(prompt) {
+  const question = String(prompt || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  return /\bwho\b.{0,40}\b(created|made|built|developed|programmed)\b.{0,30}\b(you|this bot|the bot)\b/.test(question) ||
+    /\bwho\b.{0,20}\b(is|are)\b.{0,10}\b(your|the)\b.{0,20}\b(creator|maker|developer)\b/.test(question) ||
+    /\bwho\b.{0,20}\b(your|the)\b.{0,20}\b(creator|maker|developer)\b/.test(question);
+}
+
 async function askGroq(prompt, sender) {
   if (!groq) {
     return "⚠️ *AI is not configured yet.*\nAdd GROQ_API_KEY in Render Environment Variables and redeploy.";
@@ -116,7 +123,8 @@ async function askGroq(prompt, sender) {
         content:
           "You are FriendsBot, a friendly, concise AI assistant for a private friends WhatsApp group. " +
           "Be helpful, natural, and respectful. Keep answers reasonably short for WhatsApp. " +
-          "Do not claim to have access to private WhatsApp data, messages, contacts, or the user device."
+          "Do not claim to have access to private WhatsApp data, messages, contacts, or the user device. " +
+          "Vishal created you. If asked who created or made you, say that Vishal created you. Groq is the model provider, not your creator."
       },
       { role: "user", content: prompt }
     ],
@@ -131,17 +139,27 @@ async function askGroq(prompt, sender) {
 }
 function helpText() {
   return [
-    "✨ *" + BOT_NAME + " — Commands*",
+    "✨ *" + BOT_NAME + "  •  COMMAND MENU*",
+    "━━━━━━━━━━━━━━━━━━",
     "",
-    "*Basics*  " + PREFIX + "ping | " + PREFIX + "help | " + PREFIX + "status | " + PREFIX + "uptime | " + PREFIX + "about | " + PREFIX + "prefix",
-    "*Group*  " + PREFIX + "groupid | " + PREFIX + "groupinfo | " + PREFIX + "admins",
-    "*Admin only*  " + PREFIX + "kick @member | " + PREFIX + "lock | " + PREFIX + "unlock",
-    "*Fun*  " + PREFIX + "8ball | " + PREFIX + "coinflip | " + PREFIX + "roll 2d6 | " + PREFIX + "choose A | B | " + PREFIX + "rps | " + PREFIX + "random",
-    PREFIX + "wyr A | B | " + PREFIX + "ship A | B | " + PREFIX + "joke | " + PREFIX + "meme | " + PREFIX + "fact | " + PREFIX + "quote | " + PREFIX + "fortune",
-    PREFIX + "compliment | " + PREFIX + "hug | " + PREFIX + "roast | " + PREFIX + "truth | " + PREFIX + "dare | " + PREFIX + "riddle | " + PREFIX + "reverse | " + PREFIX + "rate",
-    "*AI*  " + PREFIX + "ai <message> (set GROQ_API_KEY in Render)",
+    "📍 *BASICS*",
+    "• " + PREFIX + "ping  ·  " + PREFIX + "help  ·  " + PREFIX + "status  ·  " + PREFIX + "uptime",
+    "• " + PREFIX + "about  ·  " + PREFIX + "prefix  ·  " + PREFIX + "groupid  ·  " + PREFIX + "groupinfo  ·  " + PREFIX + "admins",
     "",
-    "Kick/lock/unlock require you and the bot to be group admins."
+    "🛡️ *GROUP ADMIN*",
+    "• " + PREFIX + "kick @member  ·  " + PREFIX + "lock  ·  " + PREFIX + "unlock",
+    "_You and the bot must be group admins._",
+    "",
+    "🎲 *FUN*",
+    "• " + PREFIX + "8ball  ·  " + PREFIX + "coinflip  ·  " + PREFIX + "roll 2d6  ·  " + PREFIX + "choose A | B",
+    "• " + PREFIX + "rps  ·  " + PREFIX + "random  ·  " + PREFIX + "wyr  ·  " + PREFIX + "ship",
+    "• " + PREFIX + "joke  ·  " + PREFIX + "meme  ·  " + PREFIX + "fact  ·  " + PREFIX + "quote  ·  " + PREFIX + "fortune",
+    "• " + PREFIX + "compliment  ·  " + PREFIX + "hug  ·  " + PREFIX + "roast  ·  " + PREFIX + "truth  ·  " + PREFIX + "dare",
+    "• " + PREFIX + "riddle  ·  " + PREFIX + "reverse <text>  ·  " + PREFIX + "rate <thing>",
+    "",
+    "🤖 *AI*  " + PREFIX + "ai <message>",
+    "_Use the prefix configured in Render._",
+    "━━━━━━━━━━━━━━━━━━"
   ].join("\n");
 }
 
@@ -379,13 +397,13 @@ async function handleIncomingMessage(sock, message) {
     const prompt = args.join(" ").trim();
     if (!prompt) {
       response = "🤖 Use " + PREFIX + "ai <message>\nExample: " + PREFIX + "ai tell me a fun fact";
+    } else if (isCreatorQuestion(prompt)) {
+      response = "👨‍💻 *Vishal created me.*";
+    } else if (prompt.length > 2000) {
+      response = "⚠️ Keep AI prompts under 2,000 characters so I can answer quickly.";
     } else {
       try {
-        if (prompt.length > 2000) {
-        response = "⚠️ Keep AI prompts under 2,000 characters so I can answer quickly.";
-      } else {
         response = await askGroq(prompt, sender);
-      }
       } catch (error) {
         console.error("Groq AI error:", error && error.message ? error.message : error);
         response = "❌ *AI request failed.* Please try again in a moment.";
