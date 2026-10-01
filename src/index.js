@@ -335,7 +335,25 @@ async function connectToWhatsApp() {
   }
 }
 
-function startHealthServer() {\n  const http = require("http");\n  const port = Number(process.env.PORT || 10000);\n  const server = http.createServer((req, res) => {\n    if (req.url === "/health") {\n      res.writeHead(200, { "Content-Type": "application/json" });\n      res.end(JSON.stringify({ ok: true, whatsapp: WHATSAPP_ENABLED, uptime: Math.floor(process.uptime()) }));\n      return;\n    }\n    res.writeHead(200, { "Content-Type": "text/plain" });\n    res.end(`${BOT_NAME} is running`);\n  });\n  server.listen(port, "0.0.0.0", () => {\n    console.log(`🌐 Health server listening on 0.0.0.0:${port}`);\n  });\n  return server;\n}\n\nasync function start() {
+function startHealthServer() {
+  const http = require("http");
+  const port = Number(process.env.PORT || 10000);
+  const server = http.createServer((req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, whatsapp: WHATSAPP_ENABLED, uptime: Math.floor(process.uptime()) }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end(`${BOT_NAME} is running`);
+  });
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`🌐 Health server listening on 0.0.0.0:${port}`);
+  });
+  return server;
+}
+
+async function start() {
   console.log("");
   console.log("╔══════════════════════════════════════╗");
   console.log("║         FRIENDS WHATSAPP BOT         ║");
