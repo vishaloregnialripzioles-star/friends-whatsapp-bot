@@ -6,7 +6,8 @@ const {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   fetchLatestWaWebVersion,
-  Browsers
+  Browsers,
+  normalizeMessageContent
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
@@ -29,12 +30,13 @@ let isConnecting = false;
 
 function getMessageText(message) {
   if (!message) return "";
+  const content = normalizeMessageContent(message) || message;
   return (
-    message.conversation ||
-    message.extendedTextMessage?.text ||
-    message.imageMessage?.caption ||
-    message.videoMessage?.caption ||
-    message.documentMessage?.caption ||
+    content.conversation ||
+    content.extendedTextMessage?.text ||
+    content.imageMessage?.caption ||
+    content.videoMessage?.caption ||
+    content.documentMessage?.caption ||
     ""
   ).trim();
 }
@@ -374,8 +376,14 @@ async function connectToWhatsApp() {
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       if (type !== "notify") return;
 
+      console.log(`📩 Received ${messages.length} message(s).`);
+
       for (const message of messages) {
         try {
+          const incomingText = getMessageText(message.message);
+          if (incomingText) {
+            console.log(`📝 Incoming text: ${JSON.stringify(incomingText.slice(0, 100))} | chat: ${message.key.remoteJid}`);
+          }
           await handleIncomingMessage(sock, message);
         } catch (error) {
           console.error("Message handler error:", error?.message || error);
