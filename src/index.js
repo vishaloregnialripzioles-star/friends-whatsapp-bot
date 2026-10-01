@@ -240,11 +240,10 @@ async function connectToWhatsApp() {
 
     let version;
     try {
-      // Use the live WhatsApp Web version instead of Baileys' bundled version.
       const latest = await fetchLatestWaWebVersion();
       version = latest.version;
       console.log("🌐 Using live WhatsApp Web version: " + version.join("."));
-    } catch (liveVersionError) {
+    } catch {
       console.warn("⚠️ Could not fetch live WhatsApp Web version; falling back to Baileys version.");
       try {
         const latest = await fetchLatestBaileysVersion();
@@ -261,12 +260,43 @@ async function connectToWhatsApp() {
       markOnlineOnConnect: true,
       syncFullHistory: false,
       connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 60000
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000,
+      generateHighQualityLinkPreview: false
     });
 
     sock.ev.on("creds.update", saveCreds);
 
     let pairingRequested = false;
+    let pairingTimer = null;
+
+    const requestPairingCode = async () => {
+      if (pairingRequested || state.creds.registered || !PAIRING_PHONE_NUMBER) return;
+
+      pairingRequested = true;
+      try {
+        // Give the socket time to establish its transport before requesting a code.
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+
+        if (state.creds.registered) {
+          console.log("ℹ️ WhatsApp became paired before the pairing code was requested.");
+          pairingRequested = false;
+          return;
+        }
+
+        const code = await sock.requestPairingCode(PAIRING_PHONE_NUMBER);
+        console.log("");
+        console.log("🔑 WhatsApp pairing code generated successfully.");
+        console.log("📱 On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number.");
+        console.log("⏱️ Enter the newest code promptly; do not reuse an older code.");
+        console.log("🔒 Never share the pairing code with anyone.");
+        console.log("");
+
+      } catch (error) {
+        pairingRequested = false;
+        console.error("❌ Pairing code request failed:", error?.message || error);
+      }
+    };
 
     sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
       if (qr && !PAIRING_PHONE_NUMBER) {
@@ -275,34 +305,32 @@ async function connectToWhatsApp() {
         console.log("\n🔒 Never share this QR or your saved auth_info folder.\n");
       }
 
-      if ((connection === "connecting" || connection === "open") && PAIRING_PHONE_NUMBER && !state.creds.registered && !pairingRequested) {
-        pairingRequested = true;
-        setTimeout(async () => {
-          try {
-            if (state.creds.registered) {
-              console.log("ℹ️ WhatsApp is already paired; skipping pairing code.");
-              pairingRequested = false;
-              return;
-            }
-
-            const code = await sock.requestPairingCode(PAIRING_PHONE_NUMBER);
-            console.log("\n🔑 WhatsApp pairing code: " + code);
-            console.log("On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number.");
-            console.log("Enter the code above. Never share it with anyone else.\n");
-          } catch (error) {
-            pairingRequested = false;
-            console.error("❌ Could not create pairing code:", error?.message || error);
-          }
-        }, 4000);
-      }
-
       if (connection === "connecting") {
         console.log("🔄 Connecting to WhatsApp...");
+
+        if (PAIRING_PHONE_NUMBER && !state.creds.registered && !pairingRequested && !pairingTimer) {
+          pairingTimer = setTimeout(() => {
+            pairingTimer = null;
+            requestPairingCode().catch((error) => {
+              pairingRequested = false;
+              console.error("❌ Pairing flow failed:", error?.message || error);
+            });
+          }, 1500);
+        }
       }
 
       if (connection === "open") {
+        if (pairingTimer) {
+          clearTimeout(pairingTimer);
+          pairingTimer = null;
+        }
+
         isConnecting = false;
         console.log("✅ WhatsApp connected successfully!");
+        console.log(state.creds.registered
+          ? "🔐 WhatsApp authentication is saved."
+          : "ℹ️ Connection opened without a registered pairing state.");
+
         if (ALLOWED_GROUP_ID) {
           console.log("🔐 Group restriction enabled:", ALLOWED_GROUP_ID);
         } else {
@@ -311,25 +339,35 @@ async function connectToWhatsApp() {
       }
 
       if (connection === "close") {
+        if (pairingTimer) {
+          clearTimeout(pairingTimer);
+          pairingTimer = null;
+        }
+
         isConnecting = false;
         const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
 
         console.error(
-          `❌ WhatsApp connection closed. Code: ${statusCode ?? "unknown"}${loggedOut ? " (logged out)" : ""}`
+          "❌ WhatsApp connection closed. Code: " +
+          (statusCode ?? "unknown") +
+          (loggedOut ? " (logged out)" : "")
         );
 
-        if (!loggedOut) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = setTimeout(() => {
-            connectToWhatsApp().catch((error) => {
-              isConnecting = false;
-              console.error("Reconnect failed:", error?.message || error);
-            });
-          }, 3000);
-        } else {
-          console.error("Please remove the local auth_info folder and pair again if you intentionally logged out.");
+        if (loggedOut) {
+          console.error("🔐 WhatsApp rejected/invalidated this auth session.");
+          console.error("ℹ️ Because this is a fresh Render filesystem, redeploying alone will not restore an old logged-out session.");
+          console.error("ℹ️ Start a fresh pairing attempt instead of reusing an old code.");
+          return;
         }
+
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => {
+          connectToWhatsApp().catch((error) => {
+            isConnecting = false;
+            console.error("Reconnect failed:", error?.message || error);
+          });
+        }, 3000);
       }
     });
 
