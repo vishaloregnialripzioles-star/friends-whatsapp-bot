@@ -1,78 +1,309 @@
 require("dotenv").config();
 
+const makeWASocket = require("@whiskeysockets/baileys").default;
+const {
+  DisconnectReason,
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion
+} = require("@whiskeysockets/baileys");
+const { Boom } = require("@hapi/boom");
+const qrcode = require("qrcode-terminal");
+const pino = require("pino");
+
 const PREFIX = process.env.PREFIX || "!";
 const BOT_NAME = process.env.BOT_NAME || "FriendsBot";
 const WHATSAPP_ENABLED = String(process.env.WHATSAPP_ENABLED).toLowerCase() === "true";
+const ALLOWED_GROUP_ID = (process.env.ALLOWED_GROUP_ID || "").trim();
+const COOLDOWN_MS = Math.max(0, Number(process.env.COOLDOWN_MS || 1500));
 
-function handleCommand(command, args, sender) {
+const cooldowns = new Map();
+let reconnectTimer = null;
+let isConnecting = false;
+
+function getMessageText(message) {
+  if (!message) return "";
+  return (
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    message.imageMessage?.caption ||
+    message.videoMessage?.caption ||
+    message.documentMessage?.caption ||
+    ""
+  ).trim();
+}
+
+function formatUptime(seconds) {
+  const s = Math.floor(seconds);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return [
+    d ? `${d}d` : "",
+    h ? `${h}h` : "",
+    m ? `${m}m` : "",
+    `${sec}s`
+  ].filter(Boolean).join(" ");
+}
+
+function randomChoice(items) {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function isCoolingDown(sender) {
+  if (!sender || COOLDOWN_MS <= 0) return false;
+  const now = Date.now();
+  const last = cooldowns.get(sender) || 0;
+  if (now - last < COOLDOWN_MS) return true;
+  cooldowns.set(sender, now);
+  if (cooldowns.size > 5000) {
+    for (const [key, timestamp] of cooldowns) {
+      if (now - timestamp > COOLDOWN_MS * 10) cooldowns.delete(key);
+    }
+  }
+  return false;
+}
+
+function helpText() {
+  return [
+    `✨ *${BOT_NAME}*`,
+    "",
+    `*Basic*`,
+    `${PREFIX}ping — Check if I'm online`,
+    `${PREFIX}help — Show this menu`,
+    `${PREFIX}about — Bot information`,
+    `${PREFIX}uptime — Show bot uptime`,
+    "",
+    `*Fun*`,
+    `${PREFIX}8ball <question> — Magic 8-ball`,
+    `${PREFIX}coinflip — Flip a coin`,
+    `${PREFIX}dice — Roll a dice`,
+    `${PREFIX}joke — Get a clean joke`,
+    `${PREFIX}fortune — Random fun prediction`,
+    "",
+    "More AI, games, XP and group features can be added on top of this stable core. ❤️"
+  ].join("\n");
+}
+
+function handleCommand(command, args) {
   switch (command) {
     case "ping":
-      return "🏓 Pong! " + BOT_NAME + " is alive.";
+      return `🏓 *Pong!* ${BOT_NAME} is online and responding.`;
 
     case "help":
+      return helpText();
+
+    case "about":
       return [
-        "✨ *" + BOT_NAME + "*",
+        `🤖 *${BOT_NAME}*`,
         "",
-        PREFIX + "ping — Check if the bot is alive",
-        PREFIX + "help — Show commands",
-        PREFIX + "8ball <question> — Ask the magic 8-ball",
-        PREFIX + "coinflip — Flip a coin",
-        PREFIX + "dice — Roll a dice"
+        "Private friends-group bot",
+        "Built with Node.js + Baileys",
+        `Prefix: ${PREFIX}`,
+        "",
+        "🔒 Session files stay local and are ignored by Git."
       ].join("\n");
 
+    case "uptime":
+      return `⏱️ Uptime: *${formatUptime(process.uptime())}*`;
+
     case "8ball": {
-      if (!args.length) return "🔮 Ask me a question after " + PREFIX + "8ball";
-      const answers = [
+      if (!args.length) return `🔮 Use *${PREFIX}8ball <question>*`;
+      return `🔮 *${randomChoice([
         "Absolutely ✨",
         "Probably 😎",
         "Maybe... 👀",
         "Not looking good 😂",
-        "Ask me again later 🔮",
-        "The bot refuses to reveal that 🤫"
-      ];
-      return "🔮 " + answers[Math.floor(Math.random() * answers.length)];
+        "Ask me again later.",
+        "The answer is hidden in the clouds ☁️"
+      ])}*`;
     }
 
     case "coinflip":
-      return Math.random() < 0.5 ? "🪙 Heads!" : "🪙 Tails!";
+      return Math.random() < 0.5 ? "🪙 *Heads!*" : "🪙 *Tails!*";
 
     case "dice":
-      return "🎲 You rolled **" + (Math.floor(Math.random() * 6) + 1) + "**";
+      return `🎲 You rolled *${Math.floor(Math.random() * 6) + 1}*`;
+
+    case "joke":
+      return randomChoice([
+        "😂 Why did the computer go to the doctor? It had a bad byte.",
+        "😎 I told my code I needed a break. It said: 'You already have 404.'",
+        "🤖 My Wi-Fi and I have a complicated relationship. It's always disconnecting.",
+        "😂 I would tell you a UDP joke, but you might not get it."
+      ]);
+
+    case "fortune":
+      return `🔮 *Fortune:* ${randomChoice([
+        "A surprisingly good idea is coming your way.",
+        "Someone in this group is about to say something hilarious.",
+        "Today has strong snack-energy. 🍪",
+        "Your next win will probably involve good timing.",
+        "A tiny decision may turn into a great story."
+      ])}`;
 
     default:
       return null;
   }
 }
 
+async function sendText(sock, jid, text, quotedMessage) {
+  await sock.sendMessage(jid, { text }, quotedMessage ? { quoted: quotedMessage } : undefined);
+}
+
+async function handleIncomingMessage(sock, message) {
+  const jid = message.key.remoteJid;
+  if (!jid || jid === "status@broadcast") return;
+  if (message.key.fromMe) return;
+
+  const isGroup = jid.endsWith("@g.us");
+  if (ALLOWED_GROUP_ID && (!isGroup || jid !== ALLOWED_GROUP_ID)) return;
+
+  const text = getMessageText(message.message);
+  if (!text.startsWith(PREFIX)) return;
+
+  const body = text.slice(PREFIX.length).trim();
+  if (!body) return;
+
+  const parts = body.split(/\s+/);
+  const command = parts.shift().toLowerCase();
+  const args = parts;
+
+  const sender = message.key.participant || jid;
+  if (isCoolingDown(sender)) return;
+
+  const response = handleCommand(command, args);
+  if (!response) return;
+
+  try {
+    await sendText(sock, jid, response, message);
+  } catch (error) {
+    console.error("Failed to send reply:", error?.message || error);
+  }
+}
+
+async function connectToWhatsApp() {
+  if (isConnecting) return;
+  isConnecting = true;
+
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+
+    let version;
+    try {
+      const latest = await fetchLatestBaileysVersion();
+      version = latest.version;
+    } catch {
+      version = undefined;
+    }
+
+    const sock = makeWASocket({
+      auth: state,
+      version,
+      logger: pino({ level: "silent" }),
+      markOnlineOnConnect: false,
+      syncFullHistory: false
+    });
+
+    sock.ev.on("creds.update", saveCreds);
+
+    sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        console.log("\n📱 Scan this QR with WhatsApp → Settings → Linked devices → Link a device\n");
+        qrcode.generate(qr, { small: true });
+        console.log("\n🔒 Never share this QR or your saved auth_info folder.\n");
+      }
+
+      if (connection === "connecting") {
+        console.log("🔄 Connecting to WhatsApp...");
+      }
+
+      if (connection === "open") {
+        isConnecting = false;
+        console.log("✅ WhatsApp connected successfully!");
+        if (ALLOWED_GROUP_ID) {
+          console.log("🔐 Group restriction enabled:", ALLOWED_GROUP_ID);
+        } else {
+          console.log("ℹ️ No group restriction is set yet.");
+        }
+      }
+
+      if (connection === "close") {
+        isConnecting = false;
+        const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        const loggedOut = statusCode === DisconnectReason.loggedOut;
+
+        console.error(
+          `❌ WhatsApp connection closed. Code: ${statusCode ?? "unknown"}${loggedOut ? " (logged out)" : ""}`
+        );
+
+        if (!loggedOut) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => {
+            connectToWhatsApp().catch((error) => {
+              isConnecting = false;
+              console.error("Reconnect failed:", error?.message || error);
+            });
+          }, 3000);
+        } else {
+          console.error("Please remove the local auth_info folder and pair again if you intentionally logged out.");
+        }
+      }
+    });
+
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
+      if (type !== "notify") return;
+
+      for (const message of messages) {
+        try {
+          await handleIncomingMessage(sock, message);
+        } catch (error) {
+          console.error("Message handler error:", error?.message || error);
+        }
+      }
+    });
+
+    return sock;
+  } catch (error) {
+    isConnecting = false;
+    console.error("❌ WhatsApp startup error:", error?.message || error);
+    throw error;
+  }
+}
+
 async function start() {
   console.log("");
-  console.log("╔════════════════════════════════════╗");
-  console.log("║        FRIENDS WHATSAPP BOT        ║");
-  console.log("╚════════════════════════════════════╝");
-  console.log("Bot:", BOT_NAME);
-  console.log("Prefix:", PREFIX);
-  console.log("WhatsApp:", WHATSAPP_ENABLED ? "ENABLED" : "DISABLED");
+  console.log("╔══════════════════════════════════════╗");
+  console.log("║         FRIENDS WHATSAPP BOT         ║");
+  console.log("╚══════════════════════════════════════╝");
+  console.log(`Bot: ${BOT_NAME}`);
+  console.log(`Prefix: ${PREFIX}`);
+  console.log(`WhatsApp: ${WHATSAPP_ENABLED ? "ENABLED" : "DISABLED"}`);
+  console.log(`Cooldown: ${COOLDOWN_MS}ms`);
   console.log("");
 
   if (!WHATSAPP_ENABLED) {
     console.log("✅ Safe development mode.");
     console.log("WhatsApp connection is disabled.");
-    console.log("Next stage will connect the bot after the core is tested.");
-    console.log("");
-    console.log("Test commands:");
-    console.log(PREFIX + "ping");
-    console.log(PREFIX + "help");
-    console.log(PREFIX + "8ball <question>");
-    console.log(PREFIX + "coinflip");
-    console.log(PREFIX + "dice");
+    console.log(`Run ${PREFIX}ping, ${PREFIX}help, ${PREFIX}8ball <question>, ${PREFIX}coinflip, or ${PREFIX}dice after connection is enabled.`);
     return;
   }
 
-  // WhatsApp connection will be added in the next stage.
-  // Keeping it isolated prevents accidental login of your personal account
-  // while the project is still being configured.
-  console.log("⚠️ WhatsApp mode is enabled, but the connector is not configured yet.");
+  console.log("⚠️ WhatsApp automation is unofficial. Use it only for your own friends/group and avoid spam or bulk messaging.");
+  await connectToWhatsApp();
 }
+
+process.on("SIGINT", () => {
+  clearTimeout(reconnectTimer);
+  console.log("\n👋 Shutting down safely...");
+  process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+  clearTimeout(reconnectTimer);
+  console.log("\n👋 Shutting down safely...");
+  process.exit(0);
+});
 
 start().catch((error) => {
   console.error("Fatal startup error:", error);
