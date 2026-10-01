@@ -14,6 +14,7 @@ const PREFIX = process.env.PREFIX || "!";
 const BOT_NAME = process.env.BOT_NAME || "FriendsBot";
 const WHATSAPP_ENABLED = String(process.env.WHATSAPP_ENABLED).toLowerCase() === "true";
 const ALLOWED_GROUP_ID = (process.env.ALLOWED_GROUP_ID || "").trim();
+const PAIRING_PHONE_NUMBER = (process.env.PAIRING_PHONE_NUMBER || "").replace(/\\D/g, "");
 const COOLDOWN_MS = Math.max(0, Number(process.env.COOLDOWN_MS || 1500));
 
 const cooldowns = new Map();
@@ -207,11 +208,26 @@ async function connectToWhatsApp() {
 
     sock.ev.on("creds.update", saveCreds);
 
-    sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
-      if (qr) {
+    let pairingRequested = false;
+
+    sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+      if (qr && !PAIRING_PHONE_NUMBER) {
         console.log("\n📱 Scan this QR with WhatsApp → Settings → Linked devices → Link a device\n");
         qrcode.generate(qr, { small: true });
         console.log("\n🔒 Never share this QR or your saved auth_info folder.\n");
+      }
+
+      if ((connection === "connecting" || qr) && PAIRING_PHONE_NUMBER && !state.creds.registered && !pairingRequested) {
+        pairingRequested = true;
+        try {
+          const code = await sock.requestPairingCode(PAIRING_PHONE_NUMBER);
+          console.log("\n🔑 WhatsApp pairing code: " + code);
+          console.log("On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number.");
+          console.log("Enter the code above. Never share it with anyone else.\n");
+        } catch (error) {
+          pairingRequested = false;
+          console.error("❌ Could not create pairing code:", error?.message || error);
+        }
       }
 
       if (connection === "connecting") {
@@ -280,6 +296,7 @@ async function start() {
   console.log(`Prefix: ${PREFIX}`);
   console.log(`WhatsApp: ${WHATSAPP_ENABLED ? "ENABLED" : "DISABLED"}`);
   console.log(`Cooldown: ${COOLDOWN_MS}ms`);
+  console.log(`Pairing: ${PAIRING_PHONE_NUMBER ? "PHONE CODE" : "QR CODE"}`);
   console.log("");
 
   if (!WHATSAPP_ENABLED) {
