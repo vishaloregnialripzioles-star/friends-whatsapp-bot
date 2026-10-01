@@ -9,6 +9,7 @@ const {
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
 const pino = require("pino");
+const Groq = require("groq-sdk");
 
 const PREFIX = process.env.PREFIX || "!";
 const BOT_NAME = process.env.BOT_NAME || "FriendsBot";
@@ -16,6 +17,9 @@ const WHATSAPP_ENABLED = String(process.env.WHATSAPP_ENABLED).toLowerCase() === 
 const ALLOWED_GROUP_ID = (process.env.ALLOWED_GROUP_ID || "").trim();
 const PAIRING_PHONE_NUMBER = (process.env.PAIRING_PHONE_NUMBER || "").replace(/\\D/g, "");
 const COOLDOWN_MS = Math.max(0, Number(process.env.COOLDOWN_MS || 1500));
+const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
+const AI_MODEL = (process.env.AI_MODEL || "llama-3.3-70b-versatile").trim();
+const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
 
 const cooldowns = new Map();
 let reconnectTimer = null;
@@ -65,6 +69,32 @@ function isCoolingDown(sender) {
   return false;
 }
 
+async function askGroq(prompt, sender) {
+  if (!groq) {
+    return "⚠️ *AI is not configured yet.*\\nAdd GROQ_API_KEY in Render Environment Variables and redeploy.";
+  }
+
+  const completion = await groq.chat.completions.create({
+    model: AI_MODEL,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are FriendsBot, a friendly, concise AI assistant for a private friends WhatsApp group. " +
+          "Be helpful, natural, and respectful. Keep answers reasonably short for WhatsApp. " +
+          "Do not claim to have access to private WhatsApp data, messages, contacts, or the user device."
+      },
+      { role: "user", content: prompt }
+    ],
+    temperature: 0.7,
+    max_tokens: 700,
+    user: sender ? String(sender).slice(0, 64) : undefined
+  });
+
+  const answer = completion.choices?.[0]?.message?.content?.trim();
+  if (!answer) throw new Error("Groq returned an empty response");
+  return "🤖 *" + BOT_NAME + " AI*\\n\\n" + answer;
+}
 function helpText() {
   return [
     `✨ *${BOT_NAME}*`,
@@ -81,6 +111,7 @@ function helpText() {
     `${PREFIX}dice — Roll a dice`,
     `${PREFIX}joke — Get a clean joke`,
     `${PREFIX}fortune — Random fun prediction`,
+    `${PREFIX}ai <message> — Chat with Groq AI`,
     "",
     "More AI, games, XP and group features can be added on top of this stable core. ❤️"
   ].join("\n");
@@ -173,7 +204,22 @@ async function handleIncomingMessage(sock, message) {
   const sender = message.key.participant || jid;
   if (isCoolingDown(sender)) return;
 
-  const response = handleCommand(command, args);
+  let response = handleCommand(command, args);
+
+  if (command === "ai") {
+    const prompt = args.join(" ").trim();
+    if (!prompt) {
+      response = "🤖 Use *" + PREFIX + "ai <message>*\\nExample: *" + PREFIX + "ai tell me a fun fact*";
+    } else {
+      try {
+        response = await askGroq(prompt, sender);
+      } catch (error) {
+        console.error("Groq AI error:", error?.message || error);
+        response = "❌ *AI request failed.* Please try again in a moment.";
+      }
+    }
+  }
+
   if (!response) return;
 
   try {
