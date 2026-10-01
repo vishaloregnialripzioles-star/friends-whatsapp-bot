@@ -362,6 +362,9 @@ function startHealthServer() {
 }
 
 async function start() {
+  // Start the HTTP listener first so Render can detect the Web Service port immediately.
+  startHealthServer();
+
   console.log("");
   console.log("╔══════════════════════════════════════╗");
   console.log("║         FRIENDS WHATSAPP BOT         ║");
