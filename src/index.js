@@ -7,18 +7,21 @@ const {
   fetchLatestBaileysVersion,
   fetchLatestWaWebVersion,
   Browsers,
-  normalizeMessageContent
+  normalizeMessageContent,
+  jidNormalizedUser
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
 const pino = require("pino");
 const Groq = require("groq-sdk");
 
-const PREFIX = process.env.PREFIX || "!";
+const PREFIX = (process.env.PREFIX || "!").trim() || "!";
 const BOT_NAME = process.env.BOT_NAME || "FriendsBot";
 const WHATSAPP_ENABLED = String(process.env.WHATSAPP_ENABLED).toLowerCase() === "true";
 const ALLOWED_GROUP_ID = (process.env.ALLOWED_GROUP_ID || "").trim();
 const PAIRING_PHONE_NUMBER = (process.env.PAIRING_PHONE_NUMBER || "").replace(/\D/g, "");
+const OWNER_PHONE_NUMBER = (process.env.OWNER_PHONE_NUMBER || process.env.PAIRING_PHONE_NUMBER || "").replace(/\D/g, "");
+const AUTH_DIR = (process.env.AUTH_DIR || "auth_info").trim() || "auth_info";
 const COOLDOWN_MS = Math.max(0, Number(process.env.COOLDOWN_MS || 1500));
 const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
 const AI_MODEL = (process.env.AI_MODEL || "llama-3.3-70b-versatile").trim();
@@ -27,6 +30,9 @@ const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
 const cooldowns = new Map();
 let reconnectTimer = null;
 let isConnecting = false;
+let isWhatsAppConnected = false;
+let hasSentConnectionNotice = false;
+const sentMessageIds = new Set();
 
 function getMessageText(message) {
   if (!message) return "";
@@ -99,7 +105,7 @@ function isCoolingDown(sender) {
 
 async function askGroq(prompt, sender) {
   if (!groq) {
-    return "⚠️ *AI is not configured yet.*\\nAdd GROQ_API_KEY in Render Environment Variables and redeploy.";
+    return "⚠️ *AI is not configured yet.*\nAdd GROQ_API_KEY in Render Environment Variables and redeploy.";
   }
 
   const completion = await groq.chat.completions.create({
@@ -121,93 +127,208 @@ async function askGroq(prompt, sender) {
 
   const answer = completion.choices?.[0]?.message?.content?.trim();
   if (!answer) throw new Error("Groq returned an empty response");
-  return "🤖 *" + BOT_NAME + " AI*\\n\\n" + answer;
+  return "🤖 *" + BOT_NAME + " AI*\n\n" + answer;
 }
 function helpText() {
   return [
-    `✨ *${BOT_NAME} — Command Center*`,
+    "✨ *" + BOT_NAME + " — Commands*",
     "",
-    "*📌 Basic*",
-    `${PREFIX}ping — Check if the bot is online`,
-    `${PREFIX}help — Show all commands`,
-    `${PREFIX}about — Bot information`,
-    `${PREFIX}uptime — Show bot uptime`,
+    "*🧭 Basics*",
+    PREFIX + "ping — Check that I respond",
+    PREFIX + "help / commands — Show this menu",
+    PREFIX + "status — Connection and uptime",
+    PREFIX + "about — Bot information",
+    PREFIX + "uptime — Runtime",
+    PREFIX + "prefix — Show the active prefix",
+    PREFIX + "groupid — Show this group's ID",
     "",
-    "*🎮 Fun*",
-    `${PREFIX}8ball <question> — Ask the Magic 8-Ball`,
-    `${PREFIX}coinflip — Flip a coin`,
-    `${PREFIX}dice — Roll a six-sided dice`,
-    `${PREFIX}joke — Get a clean joke`,
-    `${PREFIX}fortune — Get a random fortune`,
+    "*🎲 Games and fun*",
+    PREFIX + "8ball <question> — Ask the Magic 8-Ball",
+    PREFIX + "coinflip — Flip a coin",
+    PREFIX + "dice or roll [NdS] — Roll dice (example: 2d6)",
+    PREFIX + "choose A | B — Pick between options",
+    PREFIX + "rps <rock|paper|scissors> — Play a round",
+    PREFIX + "random [min] [max] — Pick a number (default 1–100)",
+    PREFIX + "joke — Clean joke",
+    PREFIX + "fortune — Random fortune",
+    PREFIX + "fact — Random fun fact",
+    PREFIX + "quote — Short original quote",
+    PREFIX + "compliment [name] — Send a nice message",
+    PREFIX + "roast [name] — Friendly roast",
+    PREFIX + "truth — Clean truth prompt",
+    PREFIX + "dare — Safe group dare",
+    PREFIX + "reverse <text> — Reverse text",
+    PREFIX + "rate <thing> — Rate something for fun",
     "",
     "*🤖 AI*",
-    `${PREFIX}ai <message> — Chat with the AI`,
+    PREFIX + "ai <message> — Ask the AI (needs GROQ_API_KEY)",
     "",
-    "*💡 Examples*",
-    `${PREFIX}ping`,
-    `${PREFIX}8ball will I win?`,
-    `${PREFIX}ai tell me a fun fact`,
-    "",
-    "❤️ More commands can be added here as the bot grows."
-  ].join("\\n");
+    "Commands work in groups the bot has joined. If ALLOWED_GROUP_ID is set, only that group is enabled."
+  ].join("\n");
 }
 
-function handleCommand(command, args) {
+function handleCommand(command, args, context) {
+  const subject = args.join(" ").trim();
   switch (command) {
     case "ping":
-      return `🏓 *Pong!* ${BOT_NAME} is online and responding.`;
+      return "🏓 *Pong!* " + BOT_NAME + " is online and responding.";
 
     case "help":
+    case "commands":
       return helpText();
+
+    case "status":
+      return (isWhatsAppConnected ? "🟢 WhatsApp connected" : "🟠 WhatsApp is reconnecting") +
+        "\n⏱️ Uptime: *" + formatUptime(process.uptime()) + "*\n🔤 Prefix: *" + PREFIX + "*";
 
     case "about":
       return [
-        `🤖 *${BOT_NAME}*`,
+        "🤖 *" + BOT_NAME + "*",
         "",
         "Private friends-group bot",
         "Built with Node.js + Baileys",
-        `Prefix: ${PREFIX}`,
-        "",
-        "🔒 Session files stay local and are ignored by Git."
+        "Prefix: " + PREFIX,
+        "Use " + PREFIX + "help to see commands."
       ].join("\n");
 
     case "uptime":
-      return `⏱️ Uptime: *${formatUptime(process.uptime())}*`;
+      return "⏱️ Uptime: *" + formatUptime(process.uptime()) + "*";
+
+    case "prefix":
+      return "🔤 Current prefix: *" + PREFIX + "*";
+
+    case "groupid":
+    case "id":
+      return context && context.isGroup
+        ? "🆔 This group's ID:\n" + context.jid + "\nSet ALLOWED_GROUP_ID to this value in Render if you want to lock the bot to this group."
+        : "ℹ️ Use " + PREFIX + "groupid inside a group chat.";
 
     case "8ball": {
-      if (!args.length) return `🔮 Use *${PREFIX}8ball <question>*`;
-      return `🔮 *${randomChoice([
+      if (!subject) return "🔮 Use " + PREFIX + "8ball <question>";
+      return "🔮 *" + randomChoice([
         "Absolutely ✨",
         "Probably 😎",
         "Maybe... 👀",
         "Not looking good 😂",
         "Ask me again later.",
         "The answer is hidden in the clouds ☁️"
-      ])}*`;
+      ]) + "*";
     }
 
     case "coinflip":
+    case "flip":
       return Math.random() < 0.5 ? "🪙 *Heads!*" : "🪙 *Tails!*";
 
     case "dice":
-      return `🎲 You rolled *${Math.floor(Math.random() * 6) + 1}*`;
+    case "roll": {
+      const spec = args[0] || "1d6";
+      const match = spec.match(/^(?:(\d+)d)?(\d+)$/i);
+      if (!match) return "🎲 Use " + PREFIX + "roll [dice]d[sides] (example: " + PREFIX + "roll 2d6).";
+      const count = Number(match[1] || 1);
+      const sides = Number(match[2]);
+      if (count < 1 || count > 20 || sides < 2 || sides > 1000) {
+        return "🎲 Choose 1–20 dice and 2–1000 sides.";
+      }
+      const rolls = Array.from({ length: count }, () => Math.floor(Math.random() * sides) + 1);
+      const total = rolls.reduce((sum, value) => sum + value, 0);
+      return count === 1
+        ? "🎲 Rolled *" + rolls[0] + "* (d" + sides + ")"
+        : "🎲 Rolls: " + rolls.join(", ") + "\nTotal: *" + total + "*";
+    }
+
+    case "choose": {
+      if (!subject) return "🤔 Use " + PREFIX + "choose option A | option B";
+      let options = subject.includes("|") ? subject.split("|") : subject.includes(",") ? subject.split(",") : args;
+      options = options.map((option) => option.trim()).filter(Boolean);
+      if (options.length < 2) return "🤔 Give me at least two options, separated with | or commas.";
+      return "🤔 I choose: *" + randomChoice(options) + "*";
+    }
+
+    case "rps": {
+      const aliases = { r: "rock", p: "paper", s: "scissors" };
+      const player = aliases[(args[0] || "").toLowerCase()] || (args[0] || "").toLowerCase();
+      const choices = ["rock", "paper", "scissors"];
+      if (!choices.includes(player)) return "✊ Use " + PREFIX + "rps rock, " + PREFIX + "rps paper, or " + PREFIX + "rps scissors.";
+      const bot = randomChoice(choices);
+      const result = player === bot ? "It's a tie!" :
+        ((player === "rock" && bot === "scissors") || (player === "paper" && bot === "rock") || (player === "scissors" && bot === "paper")) ? "You win! 🎉" : "I win! 😄";
+      return "✊ You: *" + player + "*\n🤖 Me: *" + bot + "*\n" + result;
+    }
+
+    case "random": {
+      const min = args.length > 0 ? Number(args[0]) : 1;
+      const max = args.length > 1 ? Number(args[1]) : 100;
+      if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || min > max || max - min > 1000000000) {
+        return "🎯 Use " + PREFIX + "random [min] [max] with whole numbers.";
+      }
+      return "🎯 Random number: *" + (Math.floor(Math.random() * (max - min + 1)) + min) + "*";
+    }
 
     case "joke":
       return randomChoice([
         "😂 Why did the computer go to the doctor? It had a bad byte.",
         "😎 I told my code I needed a break. It said: 'You already have 404.'",
         "🤖 My Wi-Fi and I have a complicated relationship. It's always disconnecting.",
-        "😂 I would tell you a UDP joke, but you might not get it."
+        "😂 I would tell you a UDP joke, but you might not get it.",
+        "🧑‍💻 Why do programmers prefer dark mode? Because light attracts bugs."
       ]);
 
     case "fortune":
-      return `🔮 *Fortune:* ${randomChoice([
+      return "🔮 *Fortune:* " + randomChoice([
         "A surprisingly good idea is coming your way.",
         "Someone in this group is about to say something hilarious.",
         "Today has strong snack-energy. 🍪",
         "Your next win will probably involve good timing.",
         "A tiny decision may turn into a great story."
-      ])}`;
+      ]);
+
+    case "fact":
+      return "🧠 " + randomChoice([
+        "Octopuses have three hearts.",
+        "Hummingbirds can fly backwards.",
+        "A day on Venus is longer than its year.",
+        "Honeybees use a waggle dance to share directions to food.",
+        "The Eiffel Tower can grow slightly taller in hot weather.",
+        "Bananas are berries in botanical terms; strawberries aren't."
+      ]);
+
+    case "quote":
+      return "💬 " + randomChoice([
+        "Small steps still move you forward.",
+        "Your future self is quietly cheering for you.",
+        "Show up, try again, and keep the snacks close.",
+        "A good plan leaves room for a better idea."
+      ]) + " — FriendsBot";
+
+    case "compliment":
+      return "💛 " + (subject || "You") + ", you make this group more fun just by being here.";
+
+    case "roast":
+      return "🔥 " + (subject || "You") + ", your Wi-Fi signal has more commitment than your plans. (Friendly roast!)";
+
+    case "truth":
+      return "🫢 Truth: " + randomChoice([
+        "What's a tiny thing that instantly improves your day?",
+        "What's the funniest excuse you've used to avoid plans?",
+        "Which song do you know every word to?",
+        "What's a harmless opinion you will defend forever?"
+      ]);
+
+    case "dare":
+      return "🎭 Dare: " + randomChoice([
+        "Send the last emoji you used and explain it.",
+        "Give someone in this group a genuine compliment.",
+        "Describe your day using only three emojis.",
+        "Share a fun fact you know without looking it up."
+      ]);
+
+    case "reverse":
+      if (!subject) return "🔁 Use " + PREFIX + "reverse <text>";
+      return "🔁 " + Array.from(subject).reverse().join("");
+
+    case "rate":
+      if (!subject) return "⭐ Use " + PREFIX + "rate <thing>";
+      return "⭐ " + subject + ": *" + (Math.floor(Math.random() * 10) + 1) + "/10*";
 
     default:
       return null;
@@ -215,17 +336,41 @@ function handleCommand(command, args) {
 }
 
 async function sendText(sock, jid, text, quotedMessage) {
-  await sock.sendMessage(jid, { text }, quotedMessage ? { quoted: quotedMessage } : undefined);
+  const sent = await sock.sendMessage(jid, { text }, quotedMessage ? { quoted: quotedMessage } : undefined);
+  const sentId = sent && sent.key && sent.key.id;
+  if (sentId) {
+    sentMessageIds.add(sentId);
+    if (sentMessageIds.size > 2000) sentMessageIds.delete(sentMessageIds.values().next().value);
+  }
+  return sent;
+}
+
+async function notifyOwnerConnected(sock) {
+  const ownerJid = OWNER_PHONE_NUMBER
+    ? OWNER_PHONE_NUMBER + "@s.whatsapp.net"
+    : sock.user && sock.user.id
+      ? jidNormalizedUser(sock.user.id)
+      : null;
+  if (!ownerJid) {
+    console.warn("⚠️ Connected, but no owner JID is available for the WhatsApp confirmation.");
+    return false;
+  }
+  try {
+    await sendText(sock, ownerJid, "✅ " + BOT_NAME + " connected successfully!\nPrefix: " + PREFIX + "\nUse " + PREFIX + "help in your friends group.");
+    console.log("✅ Connected confirmation sent to the owner.");
+    return true;
+  } catch (error) {
+    console.error("Could not send the WhatsApp connected confirmation:", error && error.message ? error.message : error);
+    return false;
+  }
 }
 
 async function handleIncomingMessage(sock, message) {
-  const jid = message.key.remoteJid;
+  const jid = message && message.key && message.key.remoteJid;
   if (!jid || jid === "status@broadcast") return;
-  if (message.key.fromMe) return;
+  if (message.key && message.key.id && sentMessageIds.has(message.key.id)) return;
 
   const isGroup = jid.endsWith("@g.us");
-  if (ALLOWED_GROUP_ID && (!isGroup || jid !== ALLOWED_GROUP_ID)) return;
-
   const text = getMessageText(message.message);
   if (!text.startsWith(PREFIX)) return;
 
@@ -236,36 +381,40 @@ async function handleIncomingMessage(sock, message) {
   const command = parts.shift().toLowerCase();
   const args = parts;
 
-  const sender = message.key.participant || jid;
-  console.log(`⚡ Command received: ${PREFIX}${command} | chat: ${jid}`);
+  // Allow !groupid in any group so a stale ALLOWED_GROUP_ID can be corrected.
+  if (ALLOWED_GROUP_ID && (!isGroup || jid !== ALLOWED_GROUP_ID) && !(isGroup && ["groupid", "id"].includes(command))) return;
 
-  // Core commands should always work even if a previous message hit the cooldown.
-  if (!["ping", "help"].includes(command) && isCoolingDown(sender)) return;
+  const sender = (message.key && message.key.participant) || jid;
+  const cooldownKey = jid + ":" + sender;
+  console.log("⚡ Command received: " + PREFIX + command + " | chat: " + jid);
 
-  let response = handleCommand(command, args);
+  const coreCommands = ["ping", "help", "commands", "status", "about", "uptime", "prefix", "groupid", "id"];
+  if (!coreCommands.includes(command) && isCoolingDown(cooldownKey)) return;
+
+  let response = handleCommand(command, args, { jid, isGroup, sender });
 
   if (command === "ai") {
     const prompt = args.join(" ").trim();
     if (!prompt) {
-      response = "🤖 Use *" + PREFIX + "ai <message>*\\nExample: *" + PREFIX + "ai tell me a fun fact*";
+      response = "🤖 Use " + PREFIX + "ai <message>\nExample: " + PREFIX + "ai tell me a fun fact";
     } else {
       try {
         response = await askGroq(prompt, sender);
       } catch (error) {
-        console.error("Groq AI error:", error?.message || error);
+        console.error("Groq AI error:", error && error.message ? error.message : error);
         response = "❌ *AI request failed.* Please try again in a moment.";
       }
     }
   }
 
   if (!response) {
-    response = `❓ Unknown command: *${PREFIX}${command}*\\nUse *${PREFIX}help* to see every available command.`;
+    response = "❓ Unknown command: *" + PREFIX + command + "*\nUse *" + PREFIX + "help* to see every available command.";
   }
 
   try {
     await sendText(sock, jid, response, message);
   } catch (error) {
-    console.error("Failed to send reply:", error?.message || error);
+    console.error("Failed to send reply:", error && error.message ? error.message : error);
   }
 }
 
@@ -274,7 +423,7 @@ async function connectToWhatsApp() {
   isConnecting = true;
 
   try {
-    const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
     // A valid saved session must always win over pairing mode. This prevents
     // every Render restart from generating a new pairing code.
@@ -375,10 +524,16 @@ async function connectToWhatsApp() {
         }
 
         isConnecting = false;
+        isWhatsAppConnected = true;
         console.log("✅ WhatsApp connected successfully!");
         console.log(state.creds.registered
           ? "🔐 WhatsApp authentication is saved."
           : "ℹ️ Connection opened without a registered pairing state.");
+
+        if (!hasSentConnectionNotice) {
+          const noticeSent = await notifyOwnerConnected(sock);
+          if (noticeSent) hasSentConnectionNotice = true;
+        }
 
         if (ALLOWED_GROUP_ID) {
           console.log("🔐 Group restriction enabled:", ALLOWED_GROUP_ID);
@@ -394,13 +549,16 @@ async function connectToWhatsApp() {
         }
 
         isConnecting = false;
-        const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        isWhatsAppConnected = false;
+        const disconnectError = lastDisconnect && lastDisconnect.error;
+        const statusCode = disconnectError ? new Boom(disconnectError).output?.statusCode : undefined;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
 
         console.error(
           "❌ WhatsApp connection closed. Code: " +
           (statusCode ?? "unknown") +
-          (loggedOut ? " (logged out)" : "")
+          (loggedOut ? " (logged out)" : "") +
+          (disconnectError && disconnectError.message ? " | " + String(disconnectError.message).slice(0, 180) : "")
         );
 
         if (loggedOut) {
@@ -427,13 +585,6 @@ async function connectToWhatsApp() {
 
       for (const message of messages) {
         try {
-          const incomingText = getMessageText(message.message);
-          console.log(`📍 Chat JID: ${message.key.remoteJid || "unknown"} | fromMe: ${Boolean(message.key.fromMe)}`);
-          if (incomingText) {
-            console.log(`📝 Incoming text: ${JSON.stringify(incomingText.slice(0, 100))} | chat: ${message.key.remoteJid}`);
-          } else {
-            console.log("⚠️ No text command detected in this message.");
-          }
           await handleIncomingMessage(sock, message);
         } catch (error) {
           console.error("Message handler error:", error?.message || error);
@@ -455,7 +606,7 @@ function startHealthServer() {
   const server = http.createServer((req, res) => {
     if (req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, whatsapp: WHATSAPP_ENABLED, uptime: Math.floor(process.uptime()) }));
+      res.end(JSON.stringify({ ok: true, whatsapp: WHATSAPP_ENABLED, connected: isWhatsAppConnected, prefix: PREFIX, uptime: Math.floor(process.uptime()) }));
       return;
     }
     res.writeHead(200, { "Content-Type": "text/plain" });
@@ -480,6 +631,8 @@ async function start() {
   console.log(`WhatsApp: ${WHATSAPP_ENABLED ? "ENABLED" : "DISABLED"}`);
   console.log(`Cooldown: ${COOLDOWN_MS}ms`);
   console.log(`Pairing: ${PAIRING_PHONE_NUMBER ? "PHONE CODE" : "QR CODE"}`);
+  console.log(`Auth directory: ${AUTH_DIR}`);
+  console.log(`Try ${PREFIX}ping and ${PREFIX}help in a group after the bot connects.`);
   console.log("");
 
   if (!WHATSAPP_ENABLED) {
