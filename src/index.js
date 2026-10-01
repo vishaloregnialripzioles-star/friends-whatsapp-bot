@@ -4,7 +4,8 @@ const makeWASocket = require("@whiskeysockets/baileys").default;
 const {
   DisconnectReason,
   useMultiFileAuthState,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  Browsers
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
@@ -247,6 +248,7 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
       auth: state,
       version,
+      browser: Browsers.ubuntu("Chrome"),
       logger: pino({ level: "silent" }),
       markOnlineOnConnect: false,
       syncFullHistory: false
@@ -333,7 +335,7 @@ async function connectToWhatsApp() {
   }
 }
 
-async function start() {
+function startHealthServer() {\n  const http = require("http");\n  const port = Number(process.env.PORT || 10000);\n  const server = http.createServer((req, res) => {\n    if (req.url === "/health") {\n      res.writeHead(200, { "Content-Type": "application/json" });\n      res.end(JSON.stringify({ ok: true, whatsapp: WHATSAPP_ENABLED, uptime: Math.floor(process.uptime()) }));\n      return;\n    }\n    res.writeHead(200, { "Content-Type": "text/plain" });\n    res.end(`${BOT_NAME} is running`);\n  });\n  server.listen(port, "0.0.0.0", () => {\n    console.log(`🌐 Health server listening on 0.0.0.0:${port}`);\n  });\n  return server;\n}\n\nasync function start() {
   console.log("");
   console.log("╔══════════════════════════════════════╗");
   console.log("║         FRIENDS WHATSAPP BOT         ║");
