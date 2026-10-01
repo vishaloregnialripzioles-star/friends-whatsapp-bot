@@ -265,17 +265,25 @@ async function connectToWhatsApp() {
         console.log("\n🔒 Never share this QR or your saved auth_info folder.\n");
       }
 
-      if ((connection === "connecting" || qr) && PAIRING_PHONE_NUMBER && !state.creds.registered && !pairingRequested) {
+      if (connection === "connecting" && PAIRING_PHONE_NUMBER && !state.creds.registered && !pairingRequested) {
         pairingRequested = true;
-        try {
-          const code = await sock.requestPairingCode(PAIRING_PHONE_NUMBER);
-          console.log("\n🔑 WhatsApp pairing code: " + code);
-          console.log("On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number.");
-          console.log("Enter the code above. Never share it with anyone else.\n");
-        } catch (error) {
-          pairingRequested = false;
-          console.error("❌ Could not create pairing code:", error?.message || error);
-        }
+        setTimeout(async () => {
+          try {
+            if (state.creds.registered) {
+              console.log("ℹ️ WhatsApp is already paired; skipping pairing code.");
+              pairingRequested = false;
+              return;
+            }
+
+            const code = await sock.requestPairingCode(PAIRING_PHONE_NUMBER);
+            console.log("\n🔑 WhatsApp pairing code: " + code);
+            console.log("On your phone: WhatsApp → Settings → Linked devices → Link a device → Link with phone number.");
+            console.log("Enter the code above. Never share it with anyone else.\n");
+          } catch (error) {
+            pairingRequested = false;
+            console.error("❌ Could not create pairing code:", error?.message || error);
+          }
+        }, 2500);
       }
 
       if (connection === "connecting") {
